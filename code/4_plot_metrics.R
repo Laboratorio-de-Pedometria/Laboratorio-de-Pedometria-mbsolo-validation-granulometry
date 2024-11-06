@@ -1,0 +1,93 @@
+# Carregar pacotes necessários
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(grid)
+library(writexl)
+
+# Carregar os dados
+file_path <- "./results/all_results.csv"
+data <- read.csv(file_path)
+
+# Definir a ordem dos níveis dos biomas (apenas Brasil neste caso)
+biome_levels <- c("Brasil")
+
+# Definir a ordem dos níveis das versões do mapa
+map_version_levels <- c("v000", "v001", "v002", "v003")
+
+# Transformar os dados e definir a ordem dos biomas e das versões do mapa
+data_long <- data %>%
+  pivot_longer(cols = c(ME_mean, ME_sd, MAE_mean, MAE_sd, MSE_mean, MSE_sd, RMSE_mean, RMSE_sd, NSE_mean, NSE_sd, R2_mean, R2_sd), 
+               names_to = c("Metric", ".value"), 
+               names_pattern = "(.*)_(mean|sd)") %>%
+  mutate(biome = factor(biome, levels = biome_levels),
+         map_version = factor(map_version, levels = map_version_levels)) %>%
+  filter(biome == "Brasil", map_version %in% map_version_levels)  # Filtrar apenas "Brasil" e as versões especificadas
+
+# Resolver duplicatas usando a média dos valores duplicados
+data_long <- data_long %>%
+  group_by(type, map_version, Metric) %>%
+  summarize(mean = mean(mean, na.rm = TRUE),
+            sd = mean(sd, na.rm = TRUE)) %>%
+  ungroup()
+
+# Diretório para salvar os gráficos
+output_dir <- "./figure/"
+
+# Função para salvar gráficos com tabela por métrica
+save_metric_plot <- function(metric_name) {
+  # Filtrar os dados para a métrica atual
+  metric_data <- data_long %>% filter(Metric == metric_name)
+  
+  # Encontrar os limites do eixo y
+  y_limits <- range(metric_data$mean + metric_data$sd, metric_data$mean - metric_data$sd, na.rm = TRUE)
+  
+  # Criar o gráfico
+  p <- ggplot(metric_data, 
+              aes(x = map_version, y = mean, color = map_version)) +
+    geom_point(size = 4, alpha = 0.8) +  # Aumentar o tamanho dos pontos e ajustar transparência
+    geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2) +
+    facet_wrap(~ type) +
+    labs(title = paste("Validação Cruzada da Granulometria:", metric_name),
+         x = "Versão do Mapa",
+         y = metric_name) +
+    theme_bw(base_size = 16) +  # Mantém o tema original e aumenta o tamanho da fonte
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, margin = margin(t = 10)),  # Adicionar margem superior ao texto do eixo x
+          legend.position = "bottom") +  # Legenda na parte inferior
+    ylim(y_limits)
+  
+  # Criar a tabela de dados e arredondar os valores para 3 casas decimais
+  table_data <- metric_data %>%
+    select(type, map_version, mean) %>%
+    pivot_wider(names_from = map_version, values_from = mean, values_fn = list(mean = mean)) %>%
+    mutate(across(where(is.numeric), round, 3))
+  
+  # Adicionar o nome da métrica como cabeçalho da coluna
+  colnames(table_data) <- c("Tipo", paste0(map_version_levels))
+  
+  # Criar a tabela com tableGrob
+  table_grob <- tableGrob(table_data, theme = ttheme_minimal(base_size = 14))  # Aumentar o tamanho da fonte na tabela
+  
+  # Ajustar cores da tabela para corresponder ao gráfico
+  colors <- scales::hue_pal()(length(map_version_levels))
+  for (i in seq_along(map_version_levels)) {
+    col_index <- which(table_grob$layout$name == "colhead" & table_grob$layout$l == (i + 2)) # offset by 2 to match table_grob layout
+    if (length(col_index) > 0) {
+      table_grob$grobs[[col_index]]$gp <- gpar(fill = colors[i], col = "black", fontsize = 14)
+    }
+  }
+  
+  # Adicionar a tabela ao gráfico
+  combined_plot <- grid.arrange(p, table_grob, ncol = 1, heights = c(4, 1))
+  
+  # Salvar o gráfico como PNG
+  ggsave(filename = paste0(output_dir, metric_name, "_granulometry.png"), plot = combined_plot, width = 16, height = 12)
+}
+
+# Salvar gráficos para cada métrica
+metrics <- c("ME", "MAE", "MSE", "RMSE", "NSE", "R2")
+
+for (metric in metrics) {
+  save_metric_plot(metric)
+}
